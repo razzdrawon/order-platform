@@ -177,6 +177,27 @@ Interactive docs at `http://localhost:8000/docs`
 ## Current Status
 
 **Phase 1 — Iteration 1 ✅**
-- Core domain model implemented
+- Core domain model: `Product`, `InventoryItem`, `OrderItem`, `Order`
+- Full order lifecycle: `PENDING → CONFIRMED / CANCELLED`
 - 14 unit tests, zero external dependencies
-- `pytest tests/unit/` → 14 passed in ~0.05s
+
+**Phase 1 — Iteration 2 ✅**
+- `OrderReservationService`: atomic multi-item reservation with rollback on partial failure
+- Repository interfaces: abstract contracts for `Product`, `Inventory`, `Order`
+- Use cases: `CreateOrder`, `CancelOrder`, `GetOrder`
+- 19 additional unit tests using in-memory fake repositories
+- `pytest tests/unit/` → 33 passed in ~0.04s, zero DB required
+
+**Phase 1 — Iteration 3** *(next)*
+- SQLAlchemy async ORM models
+- Alembic migrations
+- Concrete repository implementations backed by PostgreSQL
+- Integration tests against a real database
+
+**Phase 1 — Iteration 4** *(upcoming)*
+- FastAPI routes: `POST /orders`, `GET /orders/{id}`, `PATCH /orders/{id}/cancel`, `GET /products`
+- API integration tests
+
+**Phase 1 — Iteration 5** *(upcoming)*
+- Docker Compose setup (app + PostgreSQL)
+- Environment configuration
