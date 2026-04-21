@@ -12,6 +12,15 @@ from app.domain.exceptions import (
 
 
 @dataclass
+class Product:
+    name: str
+    sku: str
+    price: Decimal
+    id: UUID = field(default_factory=uuid4)
+    is_active: bool = True
+
+
+@dataclass
 class InventoryItem:
     product_id: UUID
     quantity: int
