@@ -188,16 +188,20 @@ Interactive docs at `http://localhost:8000/docs`
 - 19 additional unit tests using in-memory fake repositories
 - `pytest tests/unit/` → 33 passed in ~0.04s, zero DB required
 
-**Phase 1 — Iteration 3** *(next)*
-- SQLAlchemy async ORM models
-- Alembic migrations
-- Concrete repository implementations backed by PostgreSQL
-- Integration tests against a real database
+**Phase 1 — Iteration 3 ✅**
+- `app/config.py` with pydantic-settings reading from `.env`
+- SQLAlchemy async engine, session factory, and ORM models
+- Alembic configured with autogenerate — initial migration creates all 4 tables
+- Concrete SQLAlchemy repositories: `Product`, `Inventory`, `Order`
+- All use cases and repository interfaces refactored to async
+- Docker Compose with PostgreSQL 16 for local development
+- 12 integration tests against real PostgreSQL
+- `pytest tests/` → 45 passed (33 unit + 12 integration) in ~0.9s
 
-**Phase 1 — Iteration 4** *(upcoming)*
+**Phase 1 — Iteration 4** *(next)*
 - FastAPI routes: `POST /orders`, `GET /orders/{id}`, `PATCH /orders/{id}/cancel`, `GET /products`
-- API integration tests
+- API integration tests with real DB + HTTP client
 
 **Phase 1 — Iteration 5** *(upcoming)*
-- Docker Compose setup (app + PostgreSQL)
-- Environment configuration
+- Dockerize the app (add app container to Docker Compose)
+- Environment configuration finalized
