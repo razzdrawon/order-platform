@@ -141,8 +141,13 @@ pytest --cov=app --cov-report=term-missing
 
 ## Running the API
 
+**Option 1: Docker Compose (recommended)**
 ```bash
-# Coming in Phase 1 — Iteration 4
+docker-compose up
+```
+
+**Option 2: Manual (local development)**
+```bash
 uvicorn app.main:app --reload
 ```
 
@@ -151,7 +156,7 @@ Interactive docs at `http://localhost:8000/docs`
 
 ---
 
-## API Endpoints *(coming soon)*
+## API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -159,6 +164,7 @@ Interactive docs at `http://localhost:8000/docs`
 | `GET` | `/orders/{id}` | Get order by ID |
 | `PATCH` | `/orders/{id}/cancel` | Cancel order + release inventory |
 | `GET` | `/products` | List active products |
+| `GET` | `/health` | Health check |
 
 ---
 
@@ -166,7 +172,7 @@ Interactive docs at `http://localhost:8000/docs`
 
 | Phase | Focus | Status |
 |---|---|---|
-| 1 — MVP | Domain layer, API, PostgreSQL | 🔄 In progress |
+| 1 — MVP | Domain layer, API, PostgreSQL | 🔄 Nearly complete (Iteration 5 in progress) |
 | 2 — Concurrency | Optimistic locking, idempotency, SELECT FOR UPDATE | ⏳ Pending |
 | 3 — Async | Celery workers, event-driven side effects | ⏳ Pending |
 | 4 — Observability | Structured logs, metrics, tracing | ⏳ Pending |
@@ -198,10 +204,16 @@ Interactive docs at `http://localhost:8000/docs`
 - 12 integration tests against real PostgreSQL
 - `pytest tests/` → 45 passed (33 unit + 12 integration) in ~0.9s
 
-**Phase 1 — Iteration 4** *(next)*
+**Phase 1 — Iteration 4 ✅**
 - FastAPI routes: `POST /orders`, `GET /orders/{id}`, `PATCH /orders/{id}/cancel`, `GET /products`
 - API integration tests with real DB + HTTP client
+- Exception handling: 422 for validation errors, 404 for not found, 409 for invalid state transitions
+- 10 API integration tests
+- `pytest tests/` → 55 passed (33 unit + 12 repository integration + 10 API integration) in ~1.0s
+- All endpoints verified against real PostgreSQL
 
-**Phase 1 — Iteration 5** *(upcoming)*
-- Dockerize the app (add app container to Docker Compose)
+**Phase 1 — Iteration 5** *(in progress)*
+- Dockerfile for containerized app deployment
+- docker-compose.yml updated with app service
 - Environment configuration finalized
+- Full end-to-end testing in Docker environment
