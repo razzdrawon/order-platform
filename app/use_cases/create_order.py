@@ -1,14 +1,3 @@
-"""
-CreateOrder use case.
-
-Responsibilities:
-1. Validate all products exist and are active
-2. Load inventory for all requested products
-3. Build the Order and OrderItems (capturing current prices)
-4. Reserve inventory atomically via OrderReservationService
-5. Persist the order
-6. Persist the updated inventory items
-"""
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
@@ -62,21 +51,21 @@ class CreateOrderUseCase:
         self._orders = order_repo
         self._reservation = reservation_service or OrderReservationService()
 
-    def execute(self, request: CreateOrderRequest) -> CreateOrderResult:
+    async def execute(self, request: CreateOrderRequest) -> CreateOrderResult:
         if not request.items:
             raise DomainException("Order must contain at least one item")
 
         # 1. Validate products
         product_ids = [item.product_id for item in request.items]
         products = {
-            str(pid): self._products.get_by_id(pid) for pid in product_ids
+            str(pid): await self._products.get_by_id(pid) for pid in product_ids
         }
         for pid, product in products.items():
             if product is None or not product.is_active:
                 raise ProductNotFoundError(UUID(pid))
 
-        # 2. Load inventory for all products
-        inventory = self._inventory.get_by_product_ids(product_ids)
+        # 2. Load inventory
+        inventory = await self._inventory.get_by_product_ids(product_ids)
 
         # 3. Build Order with frozen prices
         order_items = [
@@ -89,13 +78,13 @@ class CreateOrderUseCase:
         ]
         order = Order(customer_id=request.customer_id, items=order_items)
 
-        # 4. Reserve inventory (raises InsufficientInventoryError on failure)
+        # 4. Reserve inventory
         self._reservation.reserve(order, inventory)
 
         # 5. Confirm and persist
         order.confirm()
-        self._orders.save(order)
-        self._inventory.save_many(list(inventory.values()))
+        await self._orders.save(order)
+        await self._inventory.save_many(list(inventory.values()))
 
         return CreateOrderResult(
             order_id=order.id,

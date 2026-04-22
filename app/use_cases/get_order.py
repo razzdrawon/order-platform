@@ -1,8 +1,3 @@
-"""
-GetOrder use case.
-
-Simple query — loads and returns an order by ID.
-"""
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -21,8 +16,8 @@ class GetOrderUseCase:
     def __init__(self, order_repo: AbstractOrderRepository) -> None:
         self._orders = order_repo
 
-    def execute(self, request: GetOrderRequest) -> Order:
-        order = self._orders.get_by_id(request.order_id)
+    async def execute(self, request: GetOrderRequest) -> Order:
+        order = await self._orders.get_by_id(request.order_id)
         if order is None:
             raise OrderNotFoundError(request.order_id)
         return order

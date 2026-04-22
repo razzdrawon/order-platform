@@ -1,12 +1,3 @@
-"""
-CancelOrder use case.
-
-Responsibilities:
-1. Load the order — raise if not found
-2. Attempt cancellation (domain enforces status rules)
-3. Release reserved inventory
-4. Persist updated order and inventory
-"""
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -44,22 +35,18 @@ class CancelOrderUseCase:
         self._inventory = inventory_repo
         self._reservation = reservation_service or OrderReservationService()
 
-    def execute(self, request: CancelOrderRequest) -> CancelOrderResult:
-        # 1. Load order
-        order = self._orders.get_by_id(request.order_id)
+    async def execute(self, request: CancelOrderRequest) -> CancelOrderResult:
+        order = await self._orders.get_by_id(request.order_id)
         if order is None:
             raise OrderNotFoundError(request.order_id)
 
-        # 2. Cancel (raises InvalidOrderTransitionError if not allowed)
         order.cancel()
 
-        # 3. Release inventory
         product_ids = [item.product_id for item in order.items]
-        inventory = self._inventory.get_by_product_ids(product_ids)
+        inventory = await self._inventory.get_by_product_ids(product_ids)
         self._reservation.release(order, inventory)
 
-        # 4. Persist
-        self._orders.save(order)
-        self._inventory.save_many(list(inventory.values()))
+        await self._orders.save(order)
+        await self._inventory.save_many(list(inventory.values()))
 
         return CancelOrderResult(order_id=order.id, status=order.status.value)
