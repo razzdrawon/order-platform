@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -73,3 +74,23 @@ class OrderItemModel(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
     order: Mapped["OrderModel"] = relationship(back_populates="items")
+
+
+class IdempotencyKeyModel(Base):
+    """
+    Stores the result of a successful order creation keyed by an
+    idempotency key supplied by the client.
+
+    When the same key arrives again (retry), we return the stored
+    response instead of re-executing the use case — preventing
+    duplicate orders and double-charges.
+    """
+    __tablename__ = "idempotency_keys"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    response_body: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

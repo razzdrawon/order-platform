@@ -4,6 +4,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import AsyncSessionFactory
+from app.repositories.idempotency_repository import SqlAlchemyIdempotencyKeyRepository
 from app.repositories.inventory_repository import SqlAlchemyInventoryRepository
 from app.repositories.order_repository import SqlAlchemyOrderRepository
 from app.repositories.product_repository import SqlAlchemyProductRepository
@@ -39,6 +40,7 @@ def get_create_order_use_case(session: SessionDep) -> CreateOrderUseCase:
         product_repo=SqlAlchemyProductRepository(session),
         inventory_repo=SqlAlchemyInventoryRepository(session),
         order_repo=SqlAlchemyOrderRepository(session),
+        idempotency_repo=SqlAlchemyIdempotencyKeyRepository(session),
     )
 
 

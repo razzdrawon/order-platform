@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
@@ -6,9 +7,11 @@ from app.domain.exceptions import DomainException
 from app.domain.models import Order, OrderItem
 from app.domain.services import OrderReservationService
 from app.repositories.base import (
+    AbstractIdempotencyKeyRepository,
     AbstractInventoryRepository,
     AbstractOrderRepository,
     AbstractProductRepository,
+    StoredIdempotencyKey,
 )
 
 
@@ -28,6 +31,7 @@ class OrderItemRequest:
 class CreateOrderRequest:
     customer_id: UUID
     items: list[OrderItemRequest]
+    idempotency_key: str | None = None  # Optional — clients send this to enable safe retries
 
 
 @dataclass
@@ -35,6 +39,7 @@ class CreateOrderResult:
     order_id: UUID
     total_amount: Decimal
     status: str
+    from_cache: bool = False  # True when the response was replayed from a previous request
 
 
 class CreateOrderUseCase:
@@ -45,15 +50,30 @@ class CreateOrderUseCase:
         inventory_repo: AbstractInventoryRepository,
         order_repo: AbstractOrderRepository,
         reservation_service: OrderReservationService | None = None,
+        idempotency_repo: AbstractIdempotencyKeyRepository | None = None,
     ) -> None:
         self._products = product_repo
         self._inventory = inventory_repo
         self._orders = order_repo
         self._reservation = reservation_service or OrderReservationService()
+        self._idempotency = idempotency_repo
 
     async def execute(self, request: CreateOrderRequest) -> CreateOrderResult:
         if not request.items:
             raise DomainException("Order must contain at least one item")
+
+        # 0. Idempotency check — if this key was already processed, replay
+        #    the stored result without touching inventory or creating a new order.
+        if request.idempotency_key and self._idempotency:
+            existing = await self._idempotency.get(request.idempotency_key)
+            if existing:
+                cached = json.loads(existing.response_body)
+                return CreateOrderResult(
+                    order_id=existing.order_id,
+                    total_amount=Decimal(cached["total_amount"]),
+                    status=cached["status"],
+                    from_cache=True,
+                )
 
         # 1. Validate products
         product_ids = [item.product_id for item in request.items]
@@ -64,7 +84,7 @@ class CreateOrderUseCase:
             if product is None or not product.is_active:
                 raise ProductNotFoundError(UUID(pid))
 
-        # 2. Load inventory
+        # 2. Load inventory (with SELECT FOR UPDATE — row-level lock)
         inventory = await self._inventory.get_by_product_ids(product_ids)
 
         # 3. Build Order with frozen prices
@@ -86,8 +106,24 @@ class CreateOrderUseCase:
         await self._orders.save(order)
         await self._inventory.save_many(list(inventory.values()))
 
-        return CreateOrderResult(
+        result = CreateOrderResult(
             order_id=order.id,
             total_amount=order.total_amount,
             status=order.status.value,
         )
+
+        # 6. Store the idempotency key so future retries get the same response
+        if request.idempotency_key and self._idempotency:
+            await self._idempotency.save(StoredIdempotencyKey(
+                key=request.idempotency_key,
+                order_id=order.id,
+                response_body=json.dumps({
+                    "order_id": str(order.id),
+                    "status": order.status.value,
+                    "total_amount": str(order.total_amount),
+                }),
+                status_code=201,
+                created_at=order.created_at,
+            ))
+
+        return result

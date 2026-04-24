@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.api.dependencies import (
     get_cancel_order_use_case,
@@ -51,6 +51,7 @@ def _build_order_response(order) -> OrderResponse:
 async def create_order(
     body: CreateOrderRequest,
     use_case: Annotated[CreateOrderUseCase, Depends(get_create_order_use_case)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     try:
         result = await use_case.execute(
@@ -60,6 +61,7 @@ async def create_order(
                     OrderItemRequest(product_id=i.product_id, quantity=i.quantity)
                     for i in body.items
                 ],
+                idempotency_key=idempotency_key,
             )
         )
         return CreateOrderResponse(
