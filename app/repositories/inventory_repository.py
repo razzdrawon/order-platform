@@ -38,14 +38,25 @@ class SqlAlchemyInventoryRepository(AbstractInventoryRepository):
     # ------------------------------------------------------------------
 
     async def get_by_product_id(self, product_id: UUID) -> InventoryItem | None:
-        row = await self._session.get(InventoryItemModel, product_id)
+        # Use SELECT ... FOR UPDATE so the row is locked for the duration of
+        # the transaction — prevents concurrent reservations from reading stale
+        # inventory state (oversell).
+        result = await self._session.execute(
+            select(InventoryItemModel)
+            .where(InventoryItemModel.product_id == product_id)
+            .with_for_update()
+        )
+        row = result.scalar_one_or_none()
         return self._to_domain(row) if row else None
 
     async def get_by_product_ids(self, product_ids: list[UUID]) -> dict[str, InventoryItem]:
+        # Lock all rows at once so the entire batch is protected as a unit.
+        # Any concurrent transaction trying to reserve the same products will
+        # block here until this transaction commits or rolls back.
         result = await self._session.execute(
-            select(InventoryItemModel).where(
-                InventoryItemModel.product_id.in_(product_ids)
-            )
+            select(InventoryItemModel)
+            .where(InventoryItemModel.product_id.in_(product_ids))
+            .with_for_update()
         )
         return {
             str(row.product_id): self._to_domain(row)
