@@ -1,9 +1,10 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import InventoryItem
+from app.domain.exceptions import OptimisticLockError
 from app.infrastructure.models import InventoryItemModel
 from app.repositories.base import AbstractInventoryRepository
 
@@ -23,6 +24,7 @@ class SqlAlchemyInventoryRepository(AbstractInventoryRepository):
             product_id=row.product_id,
             quantity=row.quantity,
             reserved=row.reserved,
+            version=row.version,
         )
 
     @staticmethod
@@ -31,21 +33,26 @@ class SqlAlchemyInventoryRepository(AbstractInventoryRepository):
             product_id=item.product_id,
             quantity=item.quantity,
             reserved=item.reserved,
+            version=item.version,
         )
 
     # ------------------------------------------------------------------
     # Interface implementation
     # ------------------------------------------------------------------
 
-    async def get_by_product_id(self, product_id: UUID) -> InventoryItem | None:
-        # Use SELECT ... FOR UPDATE so the row is locked for the duration of
-        # the transaction — prevents concurrent reservations from reading stale
-        # inventory state (oversell).
-        result = await self._session.execute(
-            select(InventoryItemModel)
-            .where(InventoryItemModel.product_id == product_id)
-            .with_for_update()
+    async def get_by_product_id(
+        self, product_id: UUID, for_update: bool = True
+    ) -> InventoryItem | None:
+        # for_update=True (default): acquires a row-level lock via SELECT FOR UPDATE.
+        # Use this on the reservation path to prevent concurrent oversells.
+        # for_update=False: plain read with no lock, used when the caller relies
+        # on optimistic locking (version check at write time) instead.
+        stmt = select(InventoryItemModel).where(
+            InventoryItemModel.product_id == product_id
         )
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self._session.execute(stmt)
         row = result.scalar_one_or_none()
         return self._to_domain(row) if row else None
 
@@ -64,12 +71,33 @@ class SqlAlchemyInventoryRepository(AbstractInventoryRepository):
         }
 
     async def save(self, item: InventoryItem) -> None:
-        row = await self._session.get(InventoryItemModel, item.product_id)
-        if row is None:
+        existing = await self._session.get(InventoryItemModel, item.product_id)
+        if existing is None:
             self._session.add(self._to_orm(item))
-        else:
-            row.quantity = item.quantity
-            row.reserved = item.reserved
+            return
+
+        # Optimistic locking: only update if the version in DB matches the
+        # version we read. If another transaction already incremented it,
+        # rowcount will be 0 and we raise OptimisticLockError so the caller
+        # can retry with fresh data.
+        next_version = item.version + 1
+        result = await self._session.execute(
+            update(InventoryItemModel)
+            .where(
+                InventoryItemModel.product_id == item.product_id,
+                InventoryItemModel.version == item.version,
+            )
+            .values(
+                quantity=item.quantity,
+                reserved=item.reserved,
+                version=next_version,
+            )
+        )
+        if result.rowcount == 0:
+            raise OptimisticLockError(
+                f"Inventory for product {item.product_id} was modified by a "
+                "concurrent transaction. Retry the operation."
+            )
 
     async def save_many(self, items: list[InventoryItem]) -> None:
         for item in items:

@@ -38,6 +38,7 @@ class InventoryItemModel(Base):
     )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reserved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     product: Mapped["ProductModel"] = relationship(back_populates="inventory")
 

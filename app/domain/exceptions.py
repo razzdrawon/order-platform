@@ -15,3 +15,8 @@ class InvalidOrderTransitionError(DomainException):
 
 class EmptyOrderError(DomainException):
     pass
+
+class OptimisticLockError(DomainException):
+    """Raised when a concurrent transaction modified the same row.
+    The caller should retry the operation with fresh data."""
+    pass

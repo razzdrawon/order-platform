@@ -29,6 +29,7 @@ from app.infrastructure.models import InventoryItemModel, ProductModel
 async def test_session():
     engine = create_async_engine(settings.TEST_DATABASE_URL, echo=False)
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSession(engine, expire_on_commit=False) as session:

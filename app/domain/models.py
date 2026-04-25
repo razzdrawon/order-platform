@@ -25,6 +25,7 @@ class InventoryItem:
     product_id: UUID
     quantity: int
     reserved: int = 0
+    version: int = 0  # Incremented on every write — used for optimistic locking
 
     @property
     def available(self) -> int:

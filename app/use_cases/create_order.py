@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
 
-from app.domain.exceptions import DomainException
+from app.domain.exceptions import DomainException, OptimisticLockError
 from app.domain.models import Order, OrderItem
 from app.domain.services import OrderReservationService
 from app.repositories.base import (
@@ -58,7 +58,24 @@ class CreateOrderUseCase:
         self._reservation = reservation_service or OrderReservationService()
         self._idempotency = idempotency_repo
 
+    _MAX_RETRIES = 3
+
     async def execute(self, request: CreateOrderRequest) -> CreateOrderResult:
+        last_error: Exception | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                return await self._execute_once(request)
+            except OptimisticLockError as exc:
+                last_error = exc
+                # Another transaction beat us — re-read inventory and retry.
+                # The session must be rolled back by the caller before retrying
+                # in production; here we let the exception propagate on the
+                # final attempt so the HTTP layer can return 409.
+                if attempt == self._MAX_RETRIES - 1:
+                    raise
+        raise last_error  # unreachable, satisfies type checker
+
+    async def _execute_once(self, request: CreateOrderRequest) -> CreateOrderResult:
         if not request.items:
             raise DomainException("Order must contain at least one item")
 
