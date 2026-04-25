@@ -14,11 +14,16 @@ import asyncio
 import concurrent.futures
 import uuid
 
+import structlog
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
+from app.logging_config import configure_logging
 from app.worker.celery_app import celery_app
+
+configure_logging()
+logger = structlog.get_logger()
 from app.infrastructure.models import JobModel
 from app.use_cases.create_order import CreateOrderUseCase, CreateOrderRequest, OrderItemRequest
 
@@ -104,14 +109,25 @@ def process_order(
     3. Updates the Job with the resulting order_id and COMPLETED status
     4. On failure: updates the Job with FAILED status and the error message
     """
+    # Bind task-level context so every log line from this task carries these fields.
+    # The worker has no HTTP request context, so we use the Celery task ID instead.
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        task_id=self.request.id,
+        job_id=job_id,
+    )
+
     SyncSessionFactory = _make_sync_session_factory()
 
     with SyncSessionFactory() as session:
         job = session.get(JobModel, uuid.UUID(job_id))
         if job is None:
+            logger.warning("worker.job_not_found", job_id=job_id)
             return  # Job was deleted before the worker picked it up
         job.status = "PROCESSING"
         session.commit()
+
+    logger.info("worker.task_started", customer_id=customer_id, item_count=len(items))
 
     try:
         result = _run_async(
@@ -124,6 +140,8 @@ def process_order(
             job.order_id = result.order_id
             session.commit()
 
+        logger.info("worker.task_completed", order_id=str(result.order_id))
+
     except Exception as exc:
         with SyncSessionFactory() as session:
             job = session.get(JobModel, uuid.UUID(job_id))
@@ -131,4 +149,6 @@ def process_order(
                 job.status = "FAILED"
                 job.error = str(exc)
                 session.commit()
+
+        logger.error("worker.task_failed", error=str(exc))
         raise

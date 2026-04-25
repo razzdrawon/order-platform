@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
 
+import structlog
+
 from app.domain.exceptions import DomainException, OptimisticLockError
 from app.domain.models import Order, OrderItem
 from app.domain.services import OrderReservationService
@@ -42,6 +44,9 @@ class CreateOrderResult:
     from_cache: bool = False  # True when the response was replayed from a previous request
 
 
+logger = structlog.get_logger()
+
+
 class CreateOrderUseCase:
 
     def __init__(
@@ -67,10 +72,12 @@ class CreateOrderUseCase:
                 return await self._execute_once(request)
             except OptimisticLockError as exc:
                 last_error = exc
-                # Another transaction beat us — re-read inventory and retry.
-                # The session must be rolled back by the caller before retrying
-                # in production; here we let the exception propagate on the
-                # final attempt so the HTTP layer can return 409.
+                logger.warning(
+                    "order.optimistic_lock_retry",
+                    attempt=attempt + 1,
+                    max_retries=self._MAX_RETRIES,
+                    customer_id=str(request.customer_id),
+                )
                 if attempt == self._MAX_RETRIES - 1:
                     raise
         raise last_error  # unreachable, satisfies type checker
@@ -85,6 +92,11 @@ class CreateOrderUseCase:
             existing = await self._idempotency.get(request.idempotency_key)
             if existing:
                 cached = json.loads(existing.response_body)
+                logger.info(
+                    "order.idempotency_cache_hit",
+                    idempotency_key=request.idempotency_key,
+                    order_id=str(existing.order_id),
+                )
                 return CreateOrderResult(
                     order_id=existing.order_id,
                     total_amount=Decimal(cached["total_amount"]),
@@ -122,6 +134,14 @@ class CreateOrderUseCase:
         order.confirm()
         await self._orders.save(order)
         await self._inventory.save_many(list(inventory.values()))
+
+        logger.info(
+            "order.created",
+            order_id=str(order.id),
+            customer_id=str(order.customer_id),
+            total_amount=str(order.total_amount),
+            item_count=len(order.items),
+        )
 
         result = CreateOrderResult(
             order_id=order.id,

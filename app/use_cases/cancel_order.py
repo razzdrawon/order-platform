@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from uuid import UUID
 
+import structlog
+
 from app.domain.exceptions import DomainException
 from app.domain.services import OrderReservationService
 from app.repositories.base import AbstractInventoryRepository, AbstractOrderRepository
@@ -21,6 +23,9 @@ class CancelOrderRequest:
 class CancelOrderResult:
     order_id: UUID
     status: str
+
+
+logger = structlog.get_logger()
 
 
 class CancelOrderUseCase:
@@ -48,5 +53,7 @@ class CancelOrderUseCase:
 
         await self._orders.save(order)
         await self._inventory.save_many(list(inventory.values()))
+
+        logger.info("order.cancelled", order_id=str(order.id))
 
         return CancelOrderResult(order_id=order.id, status=order.status.value)
