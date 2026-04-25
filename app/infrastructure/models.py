@@ -77,6 +77,30 @@ class OrderItemModel(Base):
     order: Mapped["OrderModel"] = relationship(back_populates="items")
 
 
+class JobModel(Base):
+    """
+    Tracks the lifecycle of an async order-processing task.
+
+    When POST /orders is called, a Job is created immediately and its ID
+    returned to the client (202 Accepted). The Celery worker updates this
+    record as it processes the order.
+    """
+    __tablename__ = "jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
+    # Set once the worker completes successfully
+    order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # Stores error message if the worker fails
+    error: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class IdempotencyKeyModel(Base):
     """
     Stores the result of a successful order creation keyed by an

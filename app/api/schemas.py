@@ -70,3 +70,24 @@ class CreateOrderResponse(BaseModel):
     order_id: UUID
     status: str
     total_amount: Decimal
+
+
+# ---------------------------------------------------------------------------
+# Jobs — Async order processing
+# ---------------------------------------------------------------------------
+
+class AcceptedResponse(BaseModel):
+    """Returned immediately when POST /orders enqueues an async job (202)."""
+    job_id: UUID
+    status: str = "PENDING"
+    message: str = "Order accepted for processing. Poll /jobs/{job_id} for status."
+
+
+class JobStatusResponse(BaseModel):
+    """Current state of an async order processing job."""
+    job_id: UUID
+    status: str          # PENDING | PROCESSING | COMPLETED | FAILED
+    order_id: UUID | None = None   # Set once the job completes successfully
+    error: str | None = None       # Set if the job fails
+    created_at: datetime
+    updated_at: datetime

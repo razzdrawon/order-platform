@@ -18,15 +18,32 @@ services:
     networks:
       - order_network
 
+  redis:
+    image: redis:7-alpine
+    container_name: order_platform_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - order_network
+
   app:
     build: .
     container_name: order_platform_app
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: "postgresql+asyncpg://order_user:order_pass@db:5432/order_platform"
       TEST_DATABASE_URL: "postgresql+asyncpg://order_user:order_pass@db:5432/order_platform_test"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
     ports:
       - "8000:8000"
     volumes:
@@ -40,6 +57,24 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  worker:
+    build: .
+    container_name: order_platform_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://order_user:order_pass@db:5432/order_platform"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+    volumes:
+      - .:/app
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
+    networks:
+      - order_network
 
 volumes:
   postgres_data:

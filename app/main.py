@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes import orders, products
+from app.api.routes import jobs, orders, products
 
 app = FastAPI(
     title="Order Orchestration Platform",
@@ -10,6 +10,7 @@ app = FastAPI(
 
 app.include_router(orders.router)
 app.include_router(products.router)
+app.include_router(jobs.router)
 
 
 @app.get("/health", tags=["health"])

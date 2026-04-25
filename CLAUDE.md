@@ -92,3 +92,7 @@ Infrastructure models (`ProductModel`, `OrderModel`, etc.) are distinct from dom
 ## Commit Rules
 
 Never add `Co-Authored-By` trailers or any Claude/Anthropic attribution to commits. Commits must appear as authored solely by the developer.
+
+## Workflow Rules
+
+**Never commit without explicit instruction.** After completing a feature or phase, stop and tell the developer how to validate the work (commands to run, endpoints to test, expected output). Wait for approval before creating any git commit. The developer reviews code and runs tests before deciding to commit each version.

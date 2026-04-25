@@ -160,11 +160,15 @@ Interactive docs at `http://localhost:8000/docs`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/orders` | Create order + reserve inventory |
+| `POST` | `/orders` | Create order synchronously (201 with order) |
+| `POST` | `/orders/async` | Submit order for async processing (202 with job_id) |
+| `GET` | `/jobs/{job_id}` | Poll async job status |
 | `GET` | `/orders/{id}` | Get order by ID |
 | `PATCH` | `/orders/{id}/cancel` | Cancel order + release inventory |
 | `GET` | `/products` | List active products |
 | `GET` | `/health` | Health check |
+
+The `POST /orders` endpoint accepts an optional `Idempotency-Key` header. Retrying with the same key returns the cached response without creating a duplicate order.
 
 ---
 
@@ -172,9 +176,9 @@ Interactive docs at `http://localhost:8000/docs`
 
 | Phase | Focus | Status |
 |---|---|---|
-| 1 — MVP | Domain layer, API, PostgreSQL | 🔄 Nearly complete (Iteration 5 in progress) |
-| 2 — Concurrency | Optimistic locking, idempotency, SELECT FOR UPDATE | ⏳ Pending |
-| 3 — Async | Celery workers, event-driven side effects | ⏳ Pending |
+| 1 — MVP | Domain layer, API, PostgreSQL | ✅ Complete |
+| 2 — Concurrency | Optimistic locking, idempotency, SELECT FOR UPDATE | ✅ Complete |
+| 3 — Async | Celery + Redis, background jobs, job polling | ✅ Complete |
 | 4 — Observability | Structured logs, metrics, tracing | ⏳ Pending |
 | 5 — Distribution | Kafka, multi-service, AWS deployment | ⏳ Pending |
 
@@ -212,8 +216,23 @@ Interactive docs at `http://localhost:8000/docs`
 - `pytest tests/` → 55 passed (33 unit + 12 repository integration + 10 API integration) in ~1.0s
 - All endpoints verified against real PostgreSQL
 
-**Phase 1 — Iteration 5** *(in progress)*
+**Phase 1 — Iteration 5 ✅**
 - Dockerfile for containerized app deployment
-- docker-compose.yml updated with app service
-- Environment configuration finalized
-- Full end-to-end testing in Docker environment
+- docker-compose.yml with app + PostgreSQL
+- Environment configuration via `.env`
+- Full end-to-end testing in Docker
+
+**Phase 2 — Concurrency & Reliability ✅**
+- `SELECT FOR UPDATE` on inventory rows during reservation — prevents overselling under concurrency
+- Optimistic locking: `version` column on `inventory_items`, versioned UPDATE, `OptimisticLockError` + retry
+- Idempotency keys: `Idempotency-Key` header, stored in `idempotency_keys` table, replay on retry
+- Concurrency tests using `asyncio.gather()` — proves correct behavior with simultaneous requests
+- `pytest tests/` → 55+ passed
+
+**Phase 3 — Async Processing ✅**
+- `POST /orders/async` → 202 Accepted with `job_id` (non-blocking)
+- Celery worker processes order in background: PENDING → PROCESSING → COMPLETED / FAILED
+- `GET /jobs/{job_id}` for polling
+- Redis as message broker; worker runs in separate Docker container
+- Integration tests with `CELERY_TASK_ALWAYS_EAGER=True` — no real worker needed in CI
+- `pytest tests/` → 92% coverage

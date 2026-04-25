@@ -244,6 +244,77 @@ The current design has the right foundations. Scaling would require attacking th
 | **Integration test** | Test that verifies multiple layers working together with real dependencies |
 | **Unit test** | Test of an isolated unit with no external dependencies |
 | **Modular Monolith** | Single deployable with well-separated internal modules |
+| **Optimistic Locking** | No lock on read; verify version on write; retry on conflict |
+| **Version Column** | Integer incremented on every write; detects concurrent modifications |
+| **Task Queue** | Buffer between the app and background workers (Redis + Celery here) |
+| **202 Accepted** | HTTP status meaning "received and queued, not yet processed" |
+| **Job Polling** | Client repeatedly calls GET /jobs/{id} until status is terminal |
+| **Eager Mode** | Celery config that runs tasks inline for testing — no real worker needed |
+
+---
+
+---
+
+## 11. "What is Optimistic Locking and how is it different from SELECT FOR UPDATE?"
+
+Both prevent concurrent writes from corrupting data, but they take opposite approaches to contention.
+
+**Pessimistic locking (SELECT FOR UPDATE):** lock the row before you read it. Other transactions block until you're done. Safe, simple, but creates a queue under high concurrency.
+
+**Optimistic locking:** don't lock at all. Instead, add a `version` column. When you write, assert that the version hasn't changed since you read it:
+
+```sql
+UPDATE inventory_items
+SET reserved = :new_reserved, version = :version + 1
+WHERE product_id = :id AND version = :version_i_read
+```
+
+If another transaction already modified the row, `rowcount == 0` — your update was rejected. The use case catches `OptimisticLockError` and retries up to 3 times.
+
+**When to use which:**
+- SELECT FOR UPDATE when contention is guaranteed (one item left, many buyers) — pessimistic wins because you know there will be a conflict
+- Optimistic locking when conflicts are rare — most transactions succeed on the first try, no blocking
+
+In this system, both coexist: SELECT FOR UPDATE protects the reservation path; optimistic locking acts as a safety net for versioned writes.
+
+**Key terms:** Optimistic Locking, Pessimistic Locking, Version Column, Lost Update Problem.
+
+---
+
+## 12. "Walk me through what happens when a Celery task runs"
+
+When a client hits `POST /orders/async`:
+
+1. FastAPI creates a `Job` row with `status=PENDING` in PostgreSQL
+2. Calls `process_order.delay(job_id, customer_id, items)` — this serializes the arguments and pushes a message to the Redis queue
+3. Returns `202 Accepted` with the `job_id` immediately — the client doesn't wait
+
+In the worker process:
+1. Celery picks up the message from Redis
+2. Updates `job.status = PROCESSING`
+3. Runs `CreateOrderUseCase` (fully async) inside a `ThreadPoolExecutor` thread with its own event loop
+4. On success: updates `job.status = COMPLETED`, stores `order_id`
+5. On failure: updates `job.status = FAILED`, stores the error message
+
+The client polls `GET /jobs/{job_id}` to check the result.
+
+**Why a ThreadPoolExecutor?** Celery tasks are synchronous. The use case is `async`. You can't call `asyncio.run()` if an event loop is already running in the thread (which happens in tests). Spawning a fresh thread guarantees a clean event loop every time.
+
+**Key terms:** Message Queue, Producer/Consumer, Task Queue, Event-Driven, 202 Accepted.
+
+---
+
+## 13. "Why does the worker create its own DB session instead of sharing the app's?"
+
+Because the worker runs in a completely separate process (its own Docker container). Processes don't share memory — there is no way to hand a SQLAlchemy session across a process boundary.
+
+The worker creates two independent session factories:
+- A **sync session** (psycopg2) for simple job status updates — no async needed for a single UPDATE
+- An **async session** (asyncpg) inside `_execute_order()` to run `CreateOrderUseCase`, which is fully async
+
+This separation reflects a real constraint in distributed systems: **each service owns its own DB connection pool.** The Celery worker is effectively a second service that happens to share the same database.
+
+**Key terms:** Process Isolation, Connection Pool, Service Boundaries.
 
 ---
 
