@@ -92,8 +92,15 @@ async def seed_product_and_inventory(session, price="50.00", quantity=20):
 
 async def test_health_check(client):
     response = await client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    # Status is 200 (healthy) or 503 (degraded) depending on available services.
+    # In CI only PostgreSQL is guaranteed — Redis may not be running.
+    assert response.status_code in (200, 503)
+    assert body["status"] in ("healthy", "degraded")
+    assert "database" in body["checks"]
+    assert "redis" in body["checks"]
+    # Database must always be reachable in integration tests
+    assert body["checks"]["database"]["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------

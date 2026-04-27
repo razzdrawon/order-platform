@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from app.api.routes import jobs, orders, products
+from app.api.routes import health, jobs, orders, products
 from app.logging_config import configure_logging
 from app.middleware.metrics import PrometheusMiddleware
 from app.middleware.request_context import RequestContextMiddleware
@@ -25,11 +25,7 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(orders.router)
 app.include_router(products.router)
 app.include_router(jobs.router)
-
-
-@app.get("/health", tags=["health"])
-async def health_check():
-    return {"status": "ok"}
+app.include_router(health.router)
 
 
 @app.get("/metrics", tags=["observability"], response_class=PlainTextResponse)
