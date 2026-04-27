@@ -6,6 +6,8 @@ from uuid import UUID
 import structlog
 
 from app.domain.exceptions import DomainException, OptimisticLockError
+from app.events.models import OrderCreatedEvent, now_utc
+from app.events.producer import publish_order_created
 from app.metrics import INVENTORY_ERRORS_TOTAL, ORDERS_CREATED_TOTAL
 from app.domain.models import Order, OrderItem
 from app.domain.services import OrderReservationService
@@ -138,6 +140,13 @@ class CreateOrderUseCase:
         await self._inventory.save_many(list(inventory.values()))
 
         ORDERS_CREATED_TOTAL.inc()
+        await publish_order_created(OrderCreatedEvent(
+            order_id=order.id,
+            customer_id=order.customer_id,
+            total_amount=order.total_amount,
+            item_count=len(order.items),
+            occurred_at=now_utc(),
+        ))
         logger.info(
             "order.created",
             order_id=str(order.id),
