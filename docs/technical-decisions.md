@@ -250,6 +250,15 @@ The current design has the right foundations. Scaling would require attacking th
 | **202 Accepted** | HTTP status meaning "received and queued, not yet processed" |
 | **Job Polling** | Client repeatedly calls GET /jobs/{id} until status is terminal |
 | **Eager Mode** | Celery config that runs tasks inline for testing — no real worker needed |
+| **Structured Logging** | Logs as key-value pairs (JSON) instead of free-form text — queryable in log aggregators |
+| **ContextVar** | Python primitive that stores per-async-task state — how request_id flows without being passed as an argument |
+| **Prometheus** | Pull-based monitoring system that scrapes /metrics every N seconds |
+| **Counter** | Metric that only goes up — total orders, total errors |
+| **Histogram** | Metric that records value distribution in buckets — used for latency percentiles |
+| **Label cardinality** | Number of unique label value combinations — high cardinality breaks Prometheus |
+| **Health check** | Endpoint that verifies critical dependencies and signals readiness to load balancers |
+| **Liveness probe** | Is the process alive? (Kubernetes) |
+| **Readiness probe** | Can the process serve traffic? (Kubernetes) — uses the health check |
 
 ---
 
@@ -315,6 +324,84 @@ The worker creates two independent session factories:
 This separation reflects a real constraint in distributed systems: **each service owns its own DB connection pool.** The Celery worker is effectively a second service that happens to share the same database.
 
 **Key terms:** Process Isolation, Connection Pool, Service Boundaries.
+
+---
+
+---
+
+## 14. "Why structlog instead of Python's built-in logging?"
+
+Python's standard `logging` module produces unstructured text:
+```
+2026-04-25 21:00:00 INFO Order created abc-123
+```
+
+In production with hundreds of requests per second, searching that text is painful. structlog produces structured key-value output:
+```json
+{"timestamp": "2026-04-25T21:00:00Z", "level": "info", "event": "order.created", "order_id": "abc-123", "request_id": "xyz-789"}
+```
+
+Every field is queryable. In Datadog or CloudWatch you can filter `order_id=abc-123` and see every log line that touched that order across all services.
+
+**The request_id pattern:** a UUID is generated per request in middleware and bound to `structlog.contextvars`. Every log call within that request automatically includes it — no need to pass it as a function argument. This works because Python's `ContextVar` is isolated per async task.
+
+**Alternatives:**
+| Tool | When to prefer it |
+|---|---|
+| `logging` (stdlib) | Simple scripts, no log aggregation needed |
+| `loguru` | Simpler API than structlog, less configurable |
+| OpenTelemetry Logs | Emerging standard — use when you need unified traces + logs + metrics in one SDK |
+
+---
+
+## 15. "What is Prometheus and how does the metrics endpoint work?"
+
+Prometheus is a pull-based monitoring system. Instead of your app pushing metrics to a server, Prometheus periodically scrapes `GET /metrics` and stores the time series in its own database.
+
+**The pull model advantage:** if your app dies, Prometheus notices because the scrape fails — you don't need the app to be alive to report its own death.
+
+**Metric types used:**
+- **Counter** — monotonically increasing number. `orders_created_total` only goes up. Reset on restart.
+- **Histogram** — records value distribution in pre-defined buckets. `http_request_duration_seconds` tells you what % of requests finished under 5ms, 25ms, 100ms, etc. From this you compute p50, p95, p99 latency.
+
+**Label cardinality warning:** every unique label combination is a separate time series. Never use `order_id` or `customer_id` as labels — that's millions of series. Use only low-cardinality values like HTTP method, route template, or status code. This is why the middleware uses `/orders/{order_id}` (the route template) instead of the raw URL path.
+
+**Alternatives:**
+| Tool | When to prefer it |
+|---|---|
+| Datadog | Managed — no infrastructure to run, but costs money per host |
+| CloudWatch | Native on AWS — good if already in AWS ecosystem |
+| StatsD | Push-based, simpler, but less expressive than Prometheus |
+| OpenTelemetry Metrics | Vendor-neutral SDK that can export to Prometheus, Datadog, etc. |
+
+---
+
+## 16. "What should a health check endpoint actually verify?"
+
+A health check that always returns `{"status": "ok"}` is useless — it proves the HTTP server is alive but not that the app can do any work.
+
+A useful health check verifies the critical dependencies the app needs to function:
+
+```json
+{
+  "status": "healthy",
+  "checks": {
+    "database": {"status": "ok", "latency_ms": 2.1},
+    "redis":    {"status": "ok", "latency_ms": 0.4}
+  }
+}
+```
+
+**Why latency matters:** a dependency can be "up" but so slow it's effectively broken. A DB responding in 5000ms will time out on every request. Latency in the health check surfaces this before users notice.
+
+**Why 503 on failure:** load balancers and Kubernetes use the HTTP status code, not the body. If a pod returns 503, Kubernetes stops routing traffic to it and restarts it. If it returns 200 with `"status": "error"` in the body, Kubernetes thinks everything is fine.
+
+**Alternatives:**
+| Approach | Problem |
+|---|---|
+| Always return 200 | Useless — doesn't verify dependencies |
+| Check every dependency | Too slow if you have 10 services — pick the critical ones |
+| Liveness vs Readiness | Kubernetes pattern: liveness = is the process alive, readiness = can it serve traffic |
 
 ---
 

@@ -242,11 +242,95 @@ The test fixture also overrides `settings.DATABASE_URL → TEST_DATABASE_URL` be
 
 ---
 
+---
+
+## Phase 4 — Observability
+
+**Problem being solved:** in production you cannot attach a debugger. When something breaks at 3am, you need to reconstruct exactly what happened from logs and metrics alone.
+
+### What was added
+
+#### Structured logging with structlog
+
+Every log line is a JSON object with consistent fields. Free-form text like `"Order created abc-123"` becomes:
+
+```json
+{"timestamp": "...", "level": "info", "event": "order.created", "request_id": "xyz", "order_id": "abc-123", "customer_id": "...", "total_amount": "29.99"}
+```
+
+Every field is queryable in Datadog, CloudWatch, or any log aggregator.
+
+#### request_id — the correlation thread
+
+A UUID is generated per request in `RequestContextMiddleware` and bound to `structlog.contextvars`. Every log call within that request automatically includes `request_id` — no manual passing required.
+
+```
+http.request_received   request_id=127c80a2   ← middleware
+order.created           request_id=127c80a2   ← use case, 3 layers down
+http.request_completed  request_id=127c80a2   ← middleware again
+```
+
+In production with thousands of concurrent requests, filtering by `request_id` gives you the complete trace of one specific request with zero noise.
+
+The `X-Request-ID` header lets API gateways or clients inject their own correlation ID, enabling cross-service tracing before OpenTelemetry is wired up.
+
+#### Prometheus metrics — `GET /metrics`
+
+The app exposes metrics in the Prometheus text format. A Prometheus server scrapes this endpoint every 15 seconds and stores the time series.
+
+**HTTP metrics (automatic via middleware):**
+- `http_requests_total` — counter by method, route template, status code
+- `http_request_duration_seconds` — histogram by method and route template
+
+**Business metrics (manual instrumentation):**
+- `orders_created_total` — incremented in `CreateOrderUseCase`
+- `orders_cancelled_total` — incremented in `CancelOrderUseCase`
+- `inventory_errors_total` — labeled by `error_type` (insufficient_inventory, optimistic_lock)
+- `jobs_completed_total` / `jobs_failed_total` — incremented in the Celery worker
+
+Route templates (`/orders/{order_id}`) are used as labels instead of raw paths to avoid cardinality explosion from UUIDs.
+
+#### Dependency-aware health check — `GET /health`
+
+```json
+{
+  "status": "healthy",
+  "checks": {
+    "database": {"status": "ok", "latency_ms": 2.1},
+    "redis":    {"status": "ok", "latency_ms": 0.4}
+  }
+}
+```
+
+Returns `200` when all dependencies are reachable, `503` when any fails. Load balancers and Kubernetes use the status code to decide whether to route traffic to this instance.
+
+### New files (Phase 4)
+
+```
+app/logging_config.py              — structlog configuration (JSON vs console)
+app/middleware/request_context.py  — generates request_id, logs request/response
+app/middleware/metrics.py          — records HTTP metrics per request
+app/metrics.py                     — Prometheus metric definitions
+app/api/routes/health.py           — /health with active DB + Redis checks
+```
+
+### Infrastructure (Phase 4) — unchanged
+
+No new services. Observability is entirely within the app process. A real Prometheus + Grafana stack would be added as separate containers in Phase 5.
+
+### What it does NOT handle yet
+
+- No distributed tracing (OpenTelemetry) — request_id correlation is manual
+- No Grafana dashboards — metrics are exposed but not visualized
+- No alerting rules — Prometheus has the data but no alerts configured
+- No log aggregation service — logs go to stdout, need a collector (Datadog agent, FluentBit) to ship them
+
+---
+
 ## Phases Ahead
 
 | Phase | Focus | Key additions |
 |---|---|---|
-| **4 — Observability** | Understand what's happening in production | structlog structured logging, Prometheus metrics, OpenTelemetry tracing, correlation IDs |
 | **5 — Distribution** | Split into independent services | Kafka for inter-service events, separate Inventory Service, AWS ECS deployment, CI/CD |
 
 ---
