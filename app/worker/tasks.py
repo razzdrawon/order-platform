@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from app.logging_config import configure_logging
+from app.metrics import JOBS_COMPLETED_TOTAL, JOBS_FAILED_TOTAL
 from app.worker.celery_app import celery_app
 
 configure_logging()
@@ -140,6 +141,7 @@ def process_order(
             job.order_id = result.order_id
             session.commit()
 
+        JOBS_COMPLETED_TOTAL.inc()
         logger.info("worker.task_completed", order_id=str(result.order_id))
 
     except Exception as exc:
@@ -150,5 +152,6 @@ def process_order(
                 job.error = str(exc)
                 session.commit()
 
+        JOBS_FAILED_TOTAL.inc()
         logger.error("worker.task_failed", error=str(exc))
         raise

@@ -6,6 +6,7 @@ from uuid import UUID
 import structlog
 
 from app.domain.exceptions import DomainException, OptimisticLockError
+from app.metrics import INVENTORY_ERRORS_TOTAL, ORDERS_CREATED_TOTAL
 from app.domain.models import Order, OrderItem
 from app.domain.services import OrderReservationService
 from app.repositories.base import (
@@ -72,6 +73,7 @@ class CreateOrderUseCase:
                 return await self._execute_once(request)
             except OptimisticLockError as exc:
                 last_error = exc
+                INVENTORY_ERRORS_TOTAL.labels(error_type="optimistic_lock").inc()
                 logger.warning(
                     "order.optimistic_lock_retry",
                     attempt=attempt + 1,
@@ -135,6 +137,7 @@ class CreateOrderUseCase:
         await self._orders.save(order)
         await self._inventory.save_many(list(inventory.values()))
 
+        ORDERS_CREATED_TOTAL.inc()
         logger.info(
             "order.created",
             order_id=str(order.id),

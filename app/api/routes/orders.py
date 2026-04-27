@@ -15,6 +15,7 @@ from app.api.schemas import (
     OrderResponse,
 )
 from app.domain.exceptions import DomainException, InsufficientInventoryError, InvalidOrderTransitionError
+from app.metrics import INVENTORY_ERRORS_TOTAL
 from app.use_cases.cancel_order import CancelOrderRequest, CancelOrderUseCase, OrderNotFoundError
 from app.use_cases.create_order import (
     CreateOrderUseCase,
@@ -72,6 +73,7 @@ async def create_order(
     except ProductNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except InsufficientInventoryError as e:
+        INVENTORY_ERRORS_TOTAL.labels(error_type="insufficient_inventory").inc()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except DomainException as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))

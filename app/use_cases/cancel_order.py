@@ -4,6 +4,7 @@ from uuid import UUID
 import structlog
 
 from app.domain.exceptions import DomainException
+from app.metrics import ORDERS_CANCELLED_TOTAL
 from app.domain.services import OrderReservationService
 from app.repositories.base import AbstractInventoryRepository, AbstractOrderRepository
 
@@ -54,6 +55,7 @@ class CancelOrderUseCase:
         await self._orders.save(order)
         await self._inventory.save_many(list(inventory.values()))
 
+        ORDERS_CANCELLED_TOTAL.inc()
         logger.info("order.cancelled", order_id=str(order.id))
 
         return CancelOrderResult(order_id=order.id, status=order.status.value)
