@@ -56,13 +56,18 @@ jobs:
             --query 'taskDefinition' \
             --output json)
 
-          # Update the image in the container definition
+          # Update the image and inject version info
           NEW_TASK_DEF=$(echo $TASK_DEF | python3 -c "
           import json, sys
           td = json.load(sys.stdin)
           for cd in td['containerDefinitions']:
               if cd['name'] == 'app':
                   cd['image'] = '${{ steps.build.outputs.image }}'
+                  # Inject version env vars
+                  env = {e['name']: e for e in cd.get('environment', [])}
+                  env['APP_VERSION'] = {'name': 'APP_VERSION', 'value': '${{ github.ref_name }}'}
+                  env['GIT_COMMIT'] = {'name': 'GIT_COMMIT', 'value': '${{ github.sha }}'[:7]}
+                  cd['environment'] = list(env.values())
           # Remove fields that can't be passed back to register-task-definition
           for key in ['taskDefinitionArn','revision','status','requiresAttributes',
                       'compatibilities','registeredAt','registeredBy']:
