@@ -12,6 +12,7 @@ Response contract:
 Each check includes a latency_ms field so slow dependencies are visible
 even when they are technically "up".
 """
+import os
 import time
 
 import redis.asyncio as aioredis
@@ -61,5 +62,10 @@ async def health_check():
 
     return JSONResponse(
         status_code=status_code,
-        content={"status": overall, "checks": checks},
+        content={
+            "status": overall,
+            "version": os.getenv("APP_VERSION", "dev"),
+            "commit": os.getenv("GIT_COMMIT", "local"),
+            "checks": checks,
+        },
     )
