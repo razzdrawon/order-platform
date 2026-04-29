@@ -28,7 +28,7 @@ This system solves all three with atomic reservation, idempotency, and strict do
 | Cache / Locks | Redis *(Phase 2)* |
 | Async Jobs | Celery *(Phase 3)* |
 | Observability | structlog + OpenTelemetry *(Phase 4)* |
-| Infrastructure | Docker + AWS ECS *(Phase 5)* |
+| Infrastructure | Docker + AWS ECS + Terraform *(Phase 5)* |
 | Testing | pytest + pytest-asyncio |
 | Language | Python 3.11 |
 
@@ -181,7 +181,7 @@ The `POST /orders` endpoint accepts an optional `Idempotency-Key` header. Retryi
 | 2 — Concurrency | Optimistic locking, idempotency, SELECT FOR UPDATE | ✅ Complete |
 | 3 — Async | Celery + Redis, background jobs, job polling | ✅ Complete |
 | 4 — Observability | Structured logs, Prometheus metrics, health check | ✅ Complete |
-| 5 — Distribution | Kafka, multi-service, AWS deployment | ⏳ Pending |
+| 5 — Distribution | GitFlow, CI/CD, AWS ECS + RDS + ElastiCache, Terraform | ✅ Complete |
 
 ---
 
@@ -252,3 +252,15 @@ The `POST /orders` endpoint accepts an optional `Idempotency-Key` header. Retryi
 **Phase 4 — Iteration 3 ✅**
 - `GET /health` verifies DB and Redis actively — returns 200/503 for load balancer integration
 - `pytest tests/` → 73 passed, 92% coverage
+
+**Phase 5 — Iteration 1 ✅**
+- GitFlow branching strategy: `develop` → `release/*` → `master`
+- `ci.yml`: runs pytest on every push, blocks PRs if coverage < 80%
+- `release.yml`: auto-creates git tag + GitHub Release + back-merges master → develop on release PR merge
+- `deploy.yml`: builds `linux/amd64` Docker image, pushes to ECR, updates ECS task definitions, waits for stability
+
+**Phase 5 — Iteration 2 ✅**
+- AWS infrastructure via Terraform: VPC, ECR, ECS Fargate (app + worker), RDS PostgreSQL 16, ElastiCache Redis 7, ALB, CloudWatch Logs, IAM roles
+- Remote Terraform state in S3
+- `/health` extended with `version` and `commit` fields — deployment verification on every release
+- App live on ALB, logs centralized in CloudWatch
