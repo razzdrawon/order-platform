@@ -327,11 +327,206 @@ No new services. Observability is entirely within the app process. A real Promet
 
 ---
 
+## Phase 5 — Distribution & Cloud
+
+**Problem being solved:** the system runs only on a developer's machine. It needs to be deployed to a real cloud environment with automated releases, so it can be accessed by the outside world and maintained by a team.
+
+### What was added
+
+#### GitFlow branching strategy
+
+A structured branching model that separates ongoing development from releases:
+
+```
+master       ─────────●────────────────────●──────────────
+                       ↑ merge + tag v1.1.0  ↑ merge + tag v1.2.0
+release/*    ────●─────┘                ●───┘
+                 ↑ branch off develop    ↑
+develop      ────●──────────────────────●──────────────────
+```
+
+- `develop` — integration branch, all feature work merges here
+- `release/*` — release candidate (release/1.1.0), only bug fixes
+- `master` — production, only receives merged release branches
+- Tags (`v1.1.0`) are created automatically on merge to master
+
+#### GitHub Actions pipelines
+
+Three workflows covering the full software lifecycle:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | Every push / PR | Runs pytest with PostgreSQL service container, fails if coverage < 80% |
+| `release.yml` | Release/* PR merged to master | Creates git tag, publishes GitHub Release with auto-generated notes, back-merges master → develop |
+| `deploy.yml` | Push to master | Builds Docker image (linux/amd64), pushes to ECR, updates ECS task definitions, waits for stability |
+
+#### AWS infrastructure via Terraform
+
+All infrastructure is declared as code in `infra/`. One `terraform apply` creates the full environment from scratch:
+
+```
+VPC (10.0.0.0/16)
+├── Public subnets (10.0.0.0/24, 10.0.1.0/24)
+│   ├── Application Load Balancer
+│   └── NAT Gateway
+└── Private subnets (10.0.10.0/24, 10.0.11.0/24)
+    ├── ECS Fargate tasks (app + worker)
+    ├── RDS PostgreSQL 16 (db.t3.micro)
+    └── ElastiCache Redis 7.0 (cache.t3.micro)
+```
+
+**ECR** stores Docker images with a lifecycle policy (last 10 kept).  
+**ECS Fargate** runs containers without managing EC2 instances — AWS handles the underlying compute.  
+**Terraform remote state** is stored in S3, enabling team collaboration without state conflicts.
+
+#### Deploy pipeline — end to end
+
+```
+Push to master
+  ↓
+GitHub Actions: configure AWS credentials (OIDC)
+  ↓
+docker buildx build --platform linux/amd64 → push to ECR
+  ↓
+aws ecs describe-task-definition (app)
+  ↓ inject new image + APP_VERSION + GIT_COMMIT
+aws ecs register-task-definition → new revision
+aws ecs update-service → ECS drains old tasks, starts new ones
+  ↓
+Same for worker service
+  ↓
+aws ecs wait services-stable → deploy confirmed
+```
+
+#### Deployment verification via `/health`
+
+The health endpoint now returns the running version and commit SHA, injected as environment variables at deploy time:
+
+```json
+{
+  "status": "healthy",
+  "version": "v1.2.0",
+  "commit": "660f8d0",
+  "checks": {
+    "database": {"status": "ok", "latency_ms": 2.1},
+    "redis":    {"status": "ok", "latency_ms": 0.4}
+  }
+}
+```
+
+After a deploy, hitting `/health` on the ALB confirms the new version is live.
+
+### Infrastructure (Phase 5)
+
+```
+Internet
+  |
+  ▼
+Application Load Balancer (public, port 80)
+  | health check: GET /health every 30s
+  ▼
+ECS Fargate — app service (private subnet)
+  ├── FastAPI (port 8000)
+  ├── Connects to RDS PostgreSQL (private subnet)
+  └── Connects to ElastiCache Redis (private subnet)
+
+ECS Fargate — worker service (private subnet)
+  ├── Celery worker
+  ├── Connects to RDS PostgreSQL
+  └── Connects to ElastiCache Redis
+
+ECR — Docker image registry
+CloudWatch Logs — centralized logs from all containers
+  └── /ecs/order-platform/app
+  └── /ecs/order-platform/worker
+```
+
+### What it does NOT handle yet
+
+- No Kafka / event streaming between services
+- No separate Inventory Service — still a monolith
+- No blue/green or canary deployments — ECS rolling update only
+- No auto-scaling — `desired_count` is fixed at 1
+
+---
+
+## Phase 5 (extra) — Grafana + Prometheus Dashboards
+
+**Problem being solved:** the app exposes `/metrics` since Phase 4 but nobody consumes it. Numbers exist with no visualization — you can't see request rate, error rate, or latency trends over time.
+
+### What was added
+
+#### Prometheus — metrics collector
+
+A Prometheus container scrapes `GET /metrics` from the app every 15 seconds and stores the time series locally. This is the missing piece between "metrics exist" and "metrics are queryable over time."
+
+```yaml
+scrape_configs:
+  - job_name: "order-platform"
+    static_configs:
+      - targets: ["app:8000"]
+    metrics_path: /metrics
+```
+
+#### Grafana — visualization layer
+
+A Grafana container connects to Prometheus as a data source. The dashboard is provisioned automatically on startup — no manual configuration needed.
+
+**Dashboard panels:**
+
+| Panel | Metric | What it shows |
+|---|---|---|
+| Request Rate | `rate(http_requests_total[1m])` | Requests/sec by method and route |
+| Error Rate | `rate(http_requests_total{status_code=~"5.."}[1m])` | % of 5xx responses |
+| Latency p50/p95/p99 | `histogram_quantile(...)` | Response time distribution |
+| Orders Created | `orders_created_total` | Running total of successful orders |
+| Orders Cancelled | `orders_cancelled_total` | Running total of cancellations |
+| Inventory Errors | `rate(inventory_errors_total[1m])` | Oversell attempts blocked |
+| Async Jobs | `jobs_completed_total` / `jobs_failed_total` | Background job outcomes |
+
+#### Kafka graceful degradation fix
+
+The Kafka producer startup was blocking the entire app lifespan if Kafka was slow to start. Added a 3-second timeout with silent fallback — if Kafka isn't reachable on startup, the app continues without it (events are no-ops until the producer reconnects).
+
+### Infrastructure (Phase 5 extra)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Docker Compose                                      │
+│                                                      │
+│  ┌──────────┐    ┌────────────┐    ┌─────────────┐  │
+│  │ app:8000 │    │prometheus  │    │  grafana    │  │
+│  │ /metrics │◄───│ :9090      │◄───│  :3000      │  │
+│  └──────────┘    └────────────┘    └─────────────┘  │
+│  scrape every 15s               dashboard auto-      │
+│                                 provisioned          │
+└──────────────────────────────────────────────────────┘
+```
+
+**Access:**
+- Grafana: `http://localhost:3000` (admin / admin)
+- Prometheus: `http://localhost:9090`
+
+### New files
+
+```
+monitoring/
+├── prometheus.yml                              — scrape config
+└── grafana/
+    ├── provisioning/
+    │   ├── datasources/prometheus.yml          — auto-wires Prometheus as datasource
+    │   └── dashboards/provider.yml             — tells Grafana where to load dashboards from
+    └── dashboards/
+        └── order-platform.json                 — 7-panel dashboard definition
+```
+
+---
+
 ## Phases Ahead
 
 | Phase | Focus | Key additions |
 |---|---|---|
-| **5 — Distribution** | Split into independent services | Kafka for inter-service events, separate Inventory Service, AWS ECS deployment, CI/CD |
+| **Next — Event Streaming** | Decouple services | Kafka for inter-service events, separate Inventory Service |
 
 ---
 

@@ -259,6 +259,27 @@ The current design has the right foundations. Scaling would require attacking th
 | **Health check** | Endpoint that verifies critical dependencies and signals readiness to load balancers |
 | **Liveness probe** | Is the process alive? (Kubernetes) |
 | **Readiness probe** | Can the process serve traffic? (Kubernetes) — uses the health check |
+| **GitFlow** | Branching strategy with develop, release/*, and master lanes — explicit release gates |
+| **CI/CD** | Continuous Integration (run tests on every push) + Continuous Deployment (auto-deploy on merge to master) |
+| **GitHub Actions** | YAML-based workflow automation that runs in response to git events |
+| **Terraform** | Infrastructure as Code tool — declares cloud resources in `.tf` files, applies them idempotently |
+| **terraform plan** | Shows what Terraform will change before touching anything — the safety check before apply |
+| **Remote state** | Terraform state stored in S3 instead of local disk — shared source of truth for the team |
+| **ECR** | Elastic Container Registry — AWS's private Docker image registry |
+| **ECS Fargate** | Serverless container runtime — you define CPU/memory/image, AWS manages the underlying compute |
+| **ALB** | Application Load Balancer — distributes traffic across ECS tasks, runs health checks |
+| **VPC** | Virtual Private Cloud — isolated network in AWS; public subnets reach the internet, private subnets don't |
+| **NAT Gateway** | Lets private subnet resources (ECS tasks, RDS) make outbound internet requests without being reachable inbound |
+| **RDS** | Relational Database Service — managed PostgreSQL on AWS, handles backups, failover, patching |
+| **ElastiCache** | Managed Redis on AWS — used as Celery broker and cache |
+| **CloudWatch Logs** | AWS centralized log aggregation — all ECS container logs flow here, queryable via Logs Insights |
+| **Task definition** | ECS blueprint: image, CPU, memory, env vars, log config — versioned, immutable once registered |
+| **desired_count** | How many ECS task replicas to run — set to 0 to stop all containers without destroying infrastructure |
+| **Prometheus** | Pull-based metrics collector — scrapes /metrics every N seconds and stores time series |
+| **Grafana** | Visualization layer — connects to Prometheus and renders dashboards from JSON definitions |
+| **Dashboard provisioning** | Grafana loads dashboards from files on startup — no manual UI configuration needed |
+| **scrape interval** | How often Prometheus pulls metrics from a target — 15s is the standard default |
+| **p95 / p99** | Percentile latency — p95 means 95% of requests completed faster than this value |
 
 ---
 
@@ -402,6 +423,183 @@ A useful health check verifies the critical dependencies the app needs to functi
 | Always return 200 | Useless — doesn't verify dependencies |
 | Check every dependency | Too slow if you have 10 services — pick the critical ones |
 | Liveness vs Readiness | Kubernetes pattern: liveness = is the process alive, readiness = can it serve traffic |
+
+---
+
+## 17. "Why GitFlow instead of trunk-based development?"
+
+GitFlow makes the release process explicit. Every release is a named branch (`release/1.2.0`) that goes through a formal merge to `master`. This gives you a clear moment to:
+
+- Run a final QA pass before production
+- Write release notes
+- Know exactly what code is in production at any point
+
+**Trunk-based development** (everyone commits to `main`, deploy on every commit) is faster but requires feature flags and very high test confidence. GitFlow is better for a team that wants explicit release gates.
+
+**The branches:**
+- `develop` — integration branch, always deployable but not necessarily released
+- `release/*` — pre-release snapshot, only bug fixes allowed
+- `master` — production, only receives merges from release branches
+- Tags (`v1.2.0`) mark exactly which commit is in production
+
+**Key terms:** GitFlow, Release Management, Branch Strategy.
+
+---
+
+## 18. "What does your CI/CD pipeline actually do?"
+
+Three GitHub Actions workflows, each with a single responsibility:
+
+**`ci.yml` — runs on every push:**
+- Spins up a PostgreSQL service container
+- Runs `pytest --cov=app --cov-fail-under=80`
+- Fails the PR if coverage drops below 80%
+- This means no code reaches `develop` or `master` without passing tests
+
+**`release.yml` — runs when a release/* PR merges to master:**
+- Extracts version from the branch name (`release/1.2.0` → `v1.2.0`)
+- Creates a git tag
+- Publishes a GitHub Release with auto-generated notes
+- Back-merges `master` → `develop` so develop gets the tag and any release fixes
+
+**`deploy.yml` — runs on every push to master:**
+- Builds the Docker image for `linux/amd64` (important: Macs with M1/M2 build `arm64` by default, which fails on ECS Fargate)
+- Pushes to ECR
+- Updates the ECS task definition with the new image + `APP_VERSION` + `GIT_COMMIT`
+- Waits for the service to stabilize before reporting success
+
+The pipeline enforces the contract: tested code → tagged release → deployed to ECS.
+
+**Key terms:** CI/CD, GitHub Actions, Continuous Integration, Continuous Deployment.
+
+---
+
+## 19. "Why Terraform and not just clicking in the AWS Console?"
+
+The AWS Console is a trap for teams. One person clicks something, the change is undone by someone else a week later, and nobody knows what the production environment actually looks like.
+
+Terraform solves this with **Infrastructure as Code** — every resource is a `.tf` file in git:
+
+```hcl
+resource "aws_ecs_service" "app" {
+  name            = "order-platform-app"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.app.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+}
+```
+
+**The workflow:**
+1. Change the `.tf` file
+2. `terraform plan` — shows what will change before touching anything
+3. `terraform apply` — executes the change
+4. `terraform destroy` — tears down everything cleanly (no orphaned resources)
+
+**Remote state in S3** means the team shares the same state file. Nobody's local machine is the source of truth.
+
+**`ignore_changes = [task_definition]`** on ECS services is deliberate — the deploy pipeline updates the task definition on every release, and Terraform should not revert that during the next `terraform apply`.
+
+**Key terms:** Infrastructure as Code, Declarative Infrastructure, Idempotent Infrastructure.
+
+---
+
+## 20. "What is ECS Fargate and why not EC2?"
+
+ECS Fargate is **serverless containers**. You define what your container needs (CPU, memory, image) and AWS runs it — you never SSH into a server, never patch an OS, never worry about the underlying VM.
+
+**EC2** gives you a virtual machine. You control it fully — install Docker yourself, manage the OS, patch security vulnerabilities, decide instance sizes. More control, more responsibility.
+
+**Why Fargate for this project:**
+- No EC2 instances to manage or pay for when idle
+- `desired_count = 0` stops all containers and billing (useful for dev/stage environments)
+- Right for stateless HTTP services and workers — the pattern here
+
+**Why EC2 at scale:**
+- Fargate costs more per CPU/memory unit than reserved EC2 instances
+- EC2 makes sense when you can predict load and commit to reserved pricing
+- Also needed for workloads that require GPU or specific hardware
+
+**Key terms:** Serverless Containers, ECS, Fargate, EC2.
+
+---
+
+## 21. "How does the app know which version is deployed?"
+
+The deploy pipeline injects two environment variables into the ECS task definition at deploy time:
+
+```python
+env['APP_VERSION'] = {'name': 'APP_VERSION', 'value': '${{ github.ref_name }}'}
+env['GIT_COMMIT']  = {'name': 'GIT_COMMIT',  'value': '${{ github.sha }}'[:7]}
+```
+
+The `/health` endpoint reads them:
+
+```python
+"version": os.getenv("APP_VERSION", "dev"),
+"commit":  os.getenv("GIT_COMMIT", "local"),
+```
+
+After every deploy, hitting `/health` on the ALB confirms the new version is serving traffic. No guessing, no checking CloudWatch — the app announces its own identity.
+
+**Key terms:** Deployment Verification, Environment Variables, Zero-Downtime Deploy.
+
+---
+
+## 22. "Why Grafana + Prometheus instead of Datadog or Splunk?"
+
+All three solve the same problem — visualizing metrics over time. The difference is operational model and cost.
+
+| Tool | Model | Cost | Tradeoff |
+|---|---|---|---|
+| **Prometheus + Grafana** | Self-hosted | Free | You run the infrastructure |
+| **Datadog** | Managed SaaS | ~$15–23/host/month | No infra to manage, more features (APM, logs, traces in one place) |
+| **Splunk** | Managed SaaS | Expensive | Enterprise-grade, overkill for most projects |
+| **CloudWatch** | AWS-native managed | Pay per metric/log | Best if already in AWS — no extra infra |
+
+**Why Prometheus + Grafana here:**
+- Free — no account needed, works fully offline
+- The app already exposes `/metrics` in Prometheus format (from Phase 4) — zero code changes
+- Grafana dashboards are JSON files in git — reproducible, version-controlled
+- Industry standard: most production backends expose Prometheus metrics even if they also send to Datadog
+
+**When you'd choose Datadog instead:**
+- Team doesn't want to manage Prometheus storage and retention
+- You need logs + metrics + traces in one UI (Datadog APM)
+- Budget exists and operational simplicity matters more than cost
+
+**Key terms:** Observability, Pull-based Monitoring, Time Series Database, Dashboard Provisioning.
+
+---
+
+## 23. "What is the difference between a Counter and a Histogram in Prometheus?"
+
+Both are metric types, but they answer different questions.
+
+**Counter** — a number that only goes up. Reset to 0 on restart.
+```
+orders_created_total = 1547
+```
+Use it for: total requests, total errors, total orders. You query the *rate of change* with `rate()`:
+```
+rate(orders_created_total[1m])  →  orders per second in the last minute
+```
+
+**Histogram** — records how values are distributed across pre-defined buckets.
+```
+http_request_duration_seconds_bucket{le="0.005"} = 1200   # requests under 5ms
+http_request_duration_seconds_bucket{le="0.1"}   = 1489   # requests under 100ms
+http_request_duration_seconds_bucket{le="+Inf"}  = 1501   # all requests
+```
+Use it for: latency, response sizes. You compute percentiles with `histogram_quantile()`:
+```
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[1m]))
+→  p95 latency: 95% of requests completed faster than this
+```
+
+**Why percentiles matter more than averages:** if p50=5ms but p99=4000ms, the average might look fine at 45ms — but 1% of your users are waiting 4 seconds. The histogram reveals this; the average hides it.
+
+**Key terms:** Counter, Histogram, Percentile, p95, p99, Rate, Cardinality.
 
 ---
 

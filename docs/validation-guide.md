@@ -237,6 +237,195 @@ Expected: **~92% coverage**, all tests pass.
 
 ---
 
+## Phase 5 — Distribution & Cloud
+
+### What to validate
+- CI pipeline runs on every push and blocks on test failure
+- Release pipeline creates a git tag and GitHub Release on merge to master
+- Deploy pipeline builds a linux/amd64 image, pushes to ECR, updates ECS, and waits for stability
+- The deployed app responds at the ALB URL with the correct version and commit
+
+### Prerequisites
+
+- AWS CLI configured (`aws configure`)
+- Terraform installed (`brew install terraform`)
+- Docker with buildx support
+- GitHub secrets set: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+
+### Provision the AWS infrastructure
+
+```bash
+cd infra
+
+# Initialize Terraform (downloads AWS provider)
+terraform init
+
+# Preview what will be created
+terraform plan \
+  -var='db_password=YourPassword' \
+  -var='app_image_tag=latest'
+
+# Create all resources (~10-15 min)
+terraform apply \
+  -var='db_password=YourPassword' \
+  -var='app_image_tag=latest'
+```
+
+Resources created: VPC, subnets, ALB, ECS cluster, ECS services (app + worker), RDS PostgreSQL, ElastiCache Redis, ECR repository, IAM roles, CloudWatch log groups.
+
+### Bootstrap — push the first image manually
+
+The first time only (pipeline can't deploy what doesn't exist yet):
+
+```bash
+# Authenticate Docker to ECR
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin \
+  <account_id>.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push (linux/amd64 required for ECS Fargate)
+docker buildx build \
+  --platform linux/amd64 \
+  --push \
+  -t <account_id>.dkr.ecr.us-east-1.amazonaws.com/order-platform/app:latest \
+  .
+```
+
+After this, the deploy pipeline handles all subsequent deploys automatically.
+
+### Trigger a release
+
+```bash
+# Create a release branch
+git checkout develop
+git checkout -b release/1.0.0
+git push origin release/1.0.0
+
+# Open a PR: release/1.0.0 → master
+# Merge the PR
+# GitHub Actions will:
+#   1. Create tag v1.0.0
+#   2. Publish GitHub Release
+#   3. Back-merge master → develop
+#   4. Build + push Docker image to ECR
+#   5. Update ECS task definition
+#   6. Wait for ECS service to stabilize
+```
+
+### Verify the deployment
+
+```bash
+# Replace with your ALB DNS name (output from terraform apply)
+ALB_URL=http://order-platform-alb-<id>.us-east-1.elb.amazonaws.com
+
+# Health check — should show version and commit of the deployed release
+curl -s $ALB_URL/health | python3 -m json.tool
+# Expected:
+# {
+#   "status": "healthy",
+#   "version": "v1.0.0",
+#   "commit": "abc1234",
+#   "checks": {
+#     "database": {"status": "ok", "latency_ms": ...},
+#     "redis": {"status": "ok", "latency_ms": ...}
+#   }
+# }
+```
+
+If `"status": "healthy"` and the commit matches the expected SHA — deploy succeeded.
+
+### View logs in CloudWatch
+
+1. Open AWS Console → CloudWatch → Log groups
+2. Select `/ecs/order-platform/app`
+3. Click **Logs Insights**
+4. Run:
+
+```
+fields @timestamp, event, request_id, status_code, path
+| sort @timestamp desc
+| limit 50
+```
+
+### Tear down (stop all billing)
+
+```bash
+cd infra
+terraform destroy \
+  -var='db_password=YourPassword' \
+  -var='app_image_tag=latest'
+```
+
+Type `yes` when prompted. Takes ~10-15 minutes (RDS and NAT Gateway are the slowest to delete).
+
+---
+
+## Phase 5 (extra) — Grafana + Prometheus
+
+### What to validate
+- Prometheus is scraping `/metrics` from the app every 15 seconds
+- Grafana dashboard loads automatically with no manual configuration
+- Panels show live data after generating traffic
+
+### Start all services
+
+```bash
+docker-compose up --build
+```
+
+Wait until you see `Application startup complete` in the app logs before proceeding.
+
+### Seed data
+
+```bash
+docker-compose exec db psql -U order_user -d order_platform -c "
+INSERT INTO products (id, name, sku, price, is_active)
+VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Test Product', 'SKU-001', 29.99, true)
+ON CONFLICT DO NOTHING;
+INSERT INTO inventory_items (product_id, quantity, reserved, version)
+VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 10, 0, 0)
+ON CONFLICT DO NOTHING;
+"
+```
+
+### Generate traffic
+
+```bash
+# Health checks
+for i in {1..5}; do curl -s http://localhost:8000/health > /dev/null; done
+
+# Create an order
+curl -s -X POST http://localhost:8000/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "00000000-0000-0000-0000-000000000001", "items": [{"product_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "quantity": 1}]}'
+
+# Trigger an inventory error (oversell attempt)
+curl -s -X POST http://localhost:8000/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "00000000-0000-0000-0000-000000000001", "items": [{"product_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "quantity": 999}]}'
+```
+
+### Open Grafana
+
+- URL: **http://localhost:3000**
+- User: `admin` / Password: `admin`
+- Go to **Dashboards → Order Platform**
+
+Expected panels with data:
+- **Request Rate** — shows activity on `/health`, `/orders`, `/metrics`
+- **Error Rate** — flat (no 5xx errors)
+- **Latency p50/p95/p99** — response time distribution per route
+- **Orders Created** — counter incremented by the order you created
+- **Inventory Errors** — incremented by the oversell attempt
+
+### Verify Prometheus is scraping
+
+Open **http://localhost:9090** → Status → Targets.
+
+You should see `order-platform` with state `UP`.
+
+---
+
 ## Running tests inside Docker (alternative)
 
 If you don't have PostgreSQL installed locally, run all tests inside the app container:

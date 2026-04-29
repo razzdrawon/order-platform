@@ -8,6 +8,7 @@
 resource "aws_ecr_repository" "app" {
   name                 = "${var.project}/app"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true  # Allows destroy even when the repository contains images
 
   image_scanning_configuration {
     scan_on_push = true  # Automatically scan for CVEs on every push

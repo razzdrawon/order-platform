@@ -24,6 +24,8 @@ Design decisions:
 Topics used:
   orders  — all order lifecycle events (created, cancelled)
 """
+import asyncio
+
 import structlog
 from aiokafka import AIOKafkaProducer
 
@@ -49,9 +51,15 @@ async def start_producer() -> None:
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
         acks="all",           # Wait for all in-sync replicas to acknowledge
         enable_idempotence=True,  # Exactly-once delivery at the producer level
+        request_timeout_ms=3000,
+        connections_max_idle_ms=5000,
     )
-    await _producer.start()
-    logger.info("kafka.producer_started", bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS)
+    try:
+        await asyncio.wait_for(_producer.start(), timeout=3.0)
+        logger.info("kafka.producer_started", bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS)
+    except Exception as exc:
+        logger.warning("kafka.producer_unavailable", reason=str(exc))
+        _producer = None
 
 
 async def stop_producer() -> None:
