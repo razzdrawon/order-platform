@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s      # Pull metrics every 15 seconds
+  evaluation_interval: 15s  # Evaluate alerting rules every 15 seconds
+
+scrape_configs:
+  - job_name: "order-platform"
+    static_configs:
+      - targets: ["app:8000"]  # app service name from docker-compose
+    metrics_path: /metrics

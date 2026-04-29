@@ -450,11 +450,83 @@ CloudWatch Logs — centralized logs from all containers
 
 ---
 
+## Phase 5 (extra) — Grafana + Prometheus Dashboards
+
+**Problem being solved:** the app exposes `/metrics` since Phase 4 but nobody consumes it. Numbers exist with no visualization — you can't see request rate, error rate, or latency trends over time.
+
+### What was added
+
+#### Prometheus — metrics collector
+
+A Prometheus container scrapes `GET /metrics` from the app every 15 seconds and stores the time series locally. This is the missing piece between "metrics exist" and "metrics are queryable over time."
+
+```yaml
+scrape_configs:
+  - job_name: "order-platform"
+    static_configs:
+      - targets: ["app:8000"]
+    metrics_path: /metrics
+```
+
+#### Grafana — visualization layer
+
+A Grafana container connects to Prometheus as a data source. The dashboard is provisioned automatically on startup — no manual configuration needed.
+
+**Dashboard panels:**
+
+| Panel | Metric | What it shows |
+|---|---|---|
+| Request Rate | `rate(http_requests_total[1m])` | Requests/sec by method and route |
+| Error Rate | `rate(http_requests_total{status_code=~"5.."}[1m])` | % of 5xx responses |
+| Latency p50/p95/p99 | `histogram_quantile(...)` | Response time distribution |
+| Orders Created | `orders_created_total` | Running total of successful orders |
+| Orders Cancelled | `orders_cancelled_total` | Running total of cancellations |
+| Inventory Errors | `rate(inventory_errors_total[1m])` | Oversell attempts blocked |
+| Async Jobs | `jobs_completed_total` / `jobs_failed_total` | Background job outcomes |
+
+#### Kafka graceful degradation fix
+
+The Kafka producer startup was blocking the entire app lifespan if Kafka was slow to start. Added a 3-second timeout with silent fallback — if Kafka isn't reachable on startup, the app continues without it (events are no-ops until the producer reconnects).
+
+### Infrastructure (Phase 5 extra)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Docker Compose                                      │
+│                                                      │
+│  ┌──────────┐    ┌────────────┐    ┌─────────────┐  │
+│  │ app:8000 │    │prometheus  │    │  grafana    │  │
+│  │ /metrics │◄───│ :9090      │◄───│  :3000      │  │
+│  └──────────┘    └────────────┘    └─────────────┘  │
+│  scrape every 15s               dashboard auto-      │
+│                                 provisioned          │
+└──────────────────────────────────────────────────────┘
+```
+
+**Access:**
+- Grafana: `http://localhost:3000` (admin / admin)
+- Prometheus: `http://localhost:9090`
+
+### New files
+
+```
+monitoring/
+├── prometheus.yml                              — scrape config
+└── grafana/
+    ├── provisioning/
+    │   ├── datasources/prometheus.yml          — auto-wires Prometheus as datasource
+    │   └── dashboards/provider.yml             — tells Grafana where to load dashboards from
+    └── dashboards/
+        └── order-platform.json                 — 7-panel dashboard definition
+```
+
+---
+
 ## Phases Ahead
 
 | Phase | Focus | Key additions |
 |---|---|---|
-| **5b — Event Streaming** | Decouple services | Kafka for inter-service events, separate Inventory Service |
+| **Next — Event Streaming** | Decouple services | Kafka for inter-service events, separate Inventory Service |
 
 ---
 

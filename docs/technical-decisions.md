@@ -275,6 +275,11 @@ The current design has the right foundations. Scaling would require attacking th
 | **CloudWatch Logs** | AWS centralized log aggregation — all ECS container logs flow here, queryable via Logs Insights |
 | **Task definition** | ECS blueprint: image, CPU, memory, env vars, log config — versioned, immutable once registered |
 | **desired_count** | How many ECS task replicas to run — set to 0 to stop all containers without destroying infrastructure |
+| **Prometheus** | Pull-based metrics collector — scrapes /metrics every N seconds and stores time series |
+| **Grafana** | Visualization layer — connects to Prometheus and renders dashboards from JSON definitions |
+| **Dashboard provisioning** | Grafana loads dashboards from files on startup — no manual UI configuration needed |
+| **scrape interval** | How often Prometheus pulls metrics from a target — 15s is the standard default |
+| **p95 / p99** | Percentile latency — p95 means 95% of requests completed faster than this value |
 
 ---
 
@@ -538,6 +543,63 @@ The `/health` endpoint reads them:
 After every deploy, hitting `/health` on the ALB confirms the new version is serving traffic. No guessing, no checking CloudWatch — the app announces its own identity.
 
 **Key terms:** Deployment Verification, Environment Variables, Zero-Downtime Deploy.
+
+---
+
+## 22. "Why Grafana + Prometheus instead of Datadog or Splunk?"
+
+All three solve the same problem — visualizing metrics over time. The difference is operational model and cost.
+
+| Tool | Model | Cost | Tradeoff |
+|---|---|---|---|
+| **Prometheus + Grafana** | Self-hosted | Free | You run the infrastructure |
+| **Datadog** | Managed SaaS | ~$15–23/host/month | No infra to manage, more features (APM, logs, traces in one place) |
+| **Splunk** | Managed SaaS | Expensive | Enterprise-grade, overkill for most projects |
+| **CloudWatch** | AWS-native managed | Pay per metric/log | Best if already in AWS — no extra infra |
+
+**Why Prometheus + Grafana here:**
+- Free — no account needed, works fully offline
+- The app already exposes `/metrics` in Prometheus format (from Phase 4) — zero code changes
+- Grafana dashboards are JSON files in git — reproducible, version-controlled
+- Industry standard: most production backends expose Prometheus metrics even if they also send to Datadog
+
+**When you'd choose Datadog instead:**
+- Team doesn't want to manage Prometheus storage and retention
+- You need logs + metrics + traces in one UI (Datadog APM)
+- Budget exists and operational simplicity matters more than cost
+
+**Key terms:** Observability, Pull-based Monitoring, Time Series Database, Dashboard Provisioning.
+
+---
+
+## 23. "What is the difference between a Counter and a Histogram in Prometheus?"
+
+Both are metric types, but they answer different questions.
+
+**Counter** — a number that only goes up. Reset to 0 on restart.
+```
+orders_created_total = 1547
+```
+Use it for: total requests, total errors, total orders. You query the *rate of change* with `rate()`:
+```
+rate(orders_created_total[1m])  →  orders per second in the last minute
+```
+
+**Histogram** — records how values are distributed across pre-defined buckets.
+```
+http_request_duration_seconds_bucket{le="0.005"} = 1200   # requests under 5ms
+http_request_duration_seconds_bucket{le="0.1"}   = 1489   # requests under 100ms
+http_request_duration_seconds_bucket{le="+Inf"}  = 1501   # all requests
+```
+Use it for: latency, response sizes. You compute percentiles with `histogram_quantile()`:
+```
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[1m]))
+→  p95 latency: 95% of requests completed faster than this
+```
+
+**Why percentiles matter more than averages:** if p50=5ms but p99=4000ms, the average might look fine at 45ms — but 1% of your users are waiting 4 seconds. The histogram reveals this; the average hides it.
+
+**Key terms:** Counter, Histogram, Percentile, p95, p99, Rate, Cardinality.
 
 ---
 

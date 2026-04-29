@@ -182,6 +182,7 @@ The `POST /orders` endpoint accepts an optional `Idempotency-Key` header. Retryi
 | 3 — Async | Celery + Redis, background jobs, job polling | ✅ Complete |
 | 4 — Observability | Structured logs, Prometheus metrics, health check | ✅ Complete |
 | 5 — Distribution | GitFlow, CI/CD, AWS ECS + RDS + ElastiCache, Terraform | ✅ Complete |
+| 5 (extra) — Dashboards | Prometheus + Grafana, live metrics visualization | ✅ Complete |
 
 ---
 
@@ -264,3 +265,9 @@ The `POST /orders` endpoint accepts an optional `Idempotency-Key` header. Retryi
 - Remote Terraform state in S3
 - `/health` extended with `version` and `commit` fields — deployment verification on every release
 - App live on ALB, logs centralized in CloudWatch
+
+**Phase 5 (extra) — Grafana + Prometheus ✅**
+- Prometheus scrapes `/metrics` every 15s — time series storage for all app metrics
+- Grafana auto-provisioned with Prometheus datasource and Order Platform dashboard
+- 7 panels: request rate, error rate, latency p50/p95/p99, orders created/cancelled, inventory errors, async jobs
+- Kafka producer startup made non-blocking — app starts cleanly even if Kafka is slow

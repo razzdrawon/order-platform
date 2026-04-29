@@ -360,6 +360,72 @@ Type `yes` when prompted. Takes ~10-15 minutes (RDS and NAT Gateway are the slow
 
 ---
 
+## Phase 5 (extra) — Grafana + Prometheus
+
+### What to validate
+- Prometheus is scraping `/metrics` from the app every 15 seconds
+- Grafana dashboard loads automatically with no manual configuration
+- Panels show live data after generating traffic
+
+### Start all services
+
+```bash
+docker-compose up --build
+```
+
+Wait until you see `Application startup complete` in the app logs before proceeding.
+
+### Seed data
+
+```bash
+docker-compose exec db psql -U order_user -d order_platform -c "
+INSERT INTO products (id, name, sku, price, is_active)
+VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Test Product', 'SKU-001', 29.99, true)
+ON CONFLICT DO NOTHING;
+INSERT INTO inventory_items (product_id, quantity, reserved, version)
+VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 10, 0, 0)
+ON CONFLICT DO NOTHING;
+"
+```
+
+### Generate traffic
+
+```bash
+# Health checks
+for i in {1..5}; do curl -s http://localhost:8000/health > /dev/null; done
+
+# Create an order
+curl -s -X POST http://localhost:8000/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "00000000-0000-0000-0000-000000000001", "items": [{"product_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "quantity": 1}]}'
+
+# Trigger an inventory error (oversell attempt)
+curl -s -X POST http://localhost:8000/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "00000000-0000-0000-0000-000000000001", "items": [{"product_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "quantity": 999}]}'
+```
+
+### Open Grafana
+
+- URL: **http://localhost:3000**
+- User: `admin` / Password: `admin`
+- Go to **Dashboards → Order Platform**
+
+Expected panels with data:
+- **Request Rate** — shows activity on `/health`, `/orders`, `/metrics`
+- **Error Rate** — flat (no 5xx errors)
+- **Latency p50/p95/p99** — response time distribution per route
+- **Orders Created** — counter incremented by the order you created
+- **Inventory Errors** — incremented by the oversell attempt
+
+### Verify Prometheus is scraping
+
+Open **http://localhost:9090** → Status → Targets.
+
+You should see `order-platform` with state `UP`.
+
+---
+
 ## Running tests inside Docker (alternative)
 
 If you don't have PostgreSQL installed locally, run all tests inside the app container:
