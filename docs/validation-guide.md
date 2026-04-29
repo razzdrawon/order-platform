@@ -237,6 +237,129 @@ Expected: **~92% coverage**, all tests pass.
 
 ---
 
+## Phase 5 — Distribution & Cloud
+
+### What to validate
+- CI pipeline runs on every push and blocks on test failure
+- Release pipeline creates a git tag and GitHub Release on merge to master
+- Deploy pipeline builds a linux/amd64 image, pushes to ECR, updates ECS, and waits for stability
+- The deployed app responds at the ALB URL with the correct version and commit
+
+### Prerequisites
+
+- AWS CLI configured (`aws configure`)
+- Terraform installed (`brew install terraform`)
+- Docker with buildx support
+- GitHub secrets set: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+
+### Provision the AWS infrastructure
+
+```bash
+cd infra
+
+# Initialize Terraform (downloads AWS provider)
+terraform init
+
+# Preview what will be created
+terraform plan \
+  -var='db_password=YourPassword' \
+  -var='app_image_tag=latest'
+
+# Create all resources (~10-15 min)
+terraform apply \
+  -var='db_password=YourPassword' \
+  -var='app_image_tag=latest'
+```
+
+Resources created: VPC, subnets, ALB, ECS cluster, ECS services (app + worker), RDS PostgreSQL, ElastiCache Redis, ECR repository, IAM roles, CloudWatch log groups.
+
+### Bootstrap — push the first image manually
+
+The first time only (pipeline can't deploy what doesn't exist yet):
+
+```bash
+# Authenticate Docker to ECR
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin \
+  <account_id>.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push (linux/amd64 required for ECS Fargate)
+docker buildx build \
+  --platform linux/amd64 \
+  --push \
+  -t <account_id>.dkr.ecr.us-east-1.amazonaws.com/order-platform/app:latest \
+  .
+```
+
+After this, the deploy pipeline handles all subsequent deploys automatically.
+
+### Trigger a release
+
+```bash
+# Create a release branch
+git checkout develop
+git checkout -b release/1.0.0
+git push origin release/1.0.0
+
+# Open a PR: release/1.0.0 → master
+# Merge the PR
+# GitHub Actions will:
+#   1. Create tag v1.0.0
+#   2. Publish GitHub Release
+#   3. Back-merge master → develop
+#   4. Build + push Docker image to ECR
+#   5. Update ECS task definition
+#   6. Wait for ECS service to stabilize
+```
+
+### Verify the deployment
+
+```bash
+# Replace with your ALB DNS name (output from terraform apply)
+ALB_URL=http://order-platform-alb-<id>.us-east-1.elb.amazonaws.com
+
+# Health check — should show version and commit of the deployed release
+curl -s $ALB_URL/health | python3 -m json.tool
+# Expected:
+# {
+#   "status": "healthy",
+#   "version": "v1.0.0",
+#   "commit": "abc1234",
+#   "checks": {
+#     "database": {"status": "ok", "latency_ms": ...},
+#     "redis": {"status": "ok", "latency_ms": ...}
+#   }
+# }
+```
+
+If `"status": "healthy"` and the commit matches the expected SHA — deploy succeeded.
+
+### View logs in CloudWatch
+
+1. Open AWS Console → CloudWatch → Log groups
+2. Select `/ecs/order-platform/app`
+3. Click **Logs Insights**
+4. Run:
+
+```
+fields @timestamp, event, request_id, status_code, path
+| sort @timestamp desc
+| limit 50
+```
+
+### Tear down (stop all billing)
+
+```bash
+cd infra
+terraform destroy \
+  -var='db_password=YourPassword' \
+  -var='app_image_tag=latest'
+```
+
+Type `yes` when prompted. Takes ~10-15 minutes (RDS and NAT Gateway are the slowest to delete).
+
+---
+
 ## Running tests inside Docker (alternative)
 
 If you don't have PostgreSQL installed locally, run all tests inside the app container:
